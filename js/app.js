@@ -59,6 +59,10 @@ const ERRORS = {
   invalid_days: "عدد الأيام بين 1 و3650.",
   invalid_password: "كلمة السر لازم تكون من 10 إلى 72 حرف.",
   banned: "حسابك معلّق. تواصل مع الإدارة.",
+  invalid_code: "الكود غير صحيح أو غير فعّال.",
+  code_expired: "انتهت صلاحية هالكود.",
+  code_exhausted: "هالكود انتهى عدد استخداماته.",
+  already_redeemed: "استخدمت هالكود من قبل.",
   disposable_email: "هالإيميل غير مسموح. استخدم إيميل حقيقي.",
 };
 function errMsg(e) {
@@ -150,6 +154,7 @@ function applyChrome() {
   const route = currentRoute();
   const links = [["#/", "الأدوات"]];
   if (state.drawVisible || isStaff()) links.push(["#/draw", "السحب"]);
+  links.push(["blog.html", "المدونة"]);
   if (state.user) links.push(["#/account", "حسابي"]);
   if (isStaff()) links.push(["#/admin", "الإدارة"]);
   const nav = $("#nav");
@@ -266,8 +271,8 @@ function openSetPassword(forced) {
 }
 
 /* ---------------- الأدوات ---------------- */
-const FREE = { images: 3, imageBytes: 15 * 1048576, audioBytes: 40 * 1048576, audioSeconds: 300 };
-const VIPL = { images: 100, imageBytes: 60 * 1048576, audioBytes: 300 * 1048576, audioSeconds: Infinity };
+const FREE = { images: 3, imageBytes: 15 * 1048576, audioBytes: 40 * 1048576, audioSeconds: 300, videoBytes: 80 * 1048576, videoSeconds: 600, recSeconds: 300 };
+const VIPL = { images: 100, imageBytes: 60 * 1048576, audioBytes: 300 * 1048576, audioSeconds: Infinity, videoBytes: 400 * 1048576, videoSeconds: Infinity, recSeconds: 1800 };
 const lim = () => (isVip() ? VIPL : FREE);
 
 function imageTool() {
@@ -650,8 +655,173 @@ function jsonTool() {
     msg, out, h("button", { class: "btn small ghost", onclick: () => out.value && copyText(out.value) }, "نسخ الناتج"));
 }
 
-const imageSuite = () => suite([["ضغط وتحويل", imageTool], ["تغيير الحجم والقص", resizeTool], ["صور إلى PDF", pdfTool]]);
-const audioSuite = () => suite([["قص", audioTool], ["دمج", mergeTool]]);
+/* ===== حذف البيانات الوصفية (EXIF/GPS) من الصور ===== */
+function exifInfo(buf) {
+  const v = new DataView(buf);
+  if (v.byteLength < 12 || v.getUint16(0) !== 0xffd8) return null;
+  let off = 2;
+  while (off + 10 < v.byteLength) {
+    const marker = v.getUint16(off);
+    if ((marker & 0xff00) !== 0xff00) break;
+    const len = v.getUint16(off + 2);
+    if (marker === 0xffe1 && v.getUint32(off + 4) === 0x45786966) {
+      const t = off + 10;
+      if (t + 8 > v.byteLength) return { exif: true, gps: false };
+      const le = v.getUint16(t) === 0x4949;
+      const ifd = t + v.getUint32(t + 4, le);
+      if (ifd + 2 > v.byteLength) return { exif: true, gps: false };
+      const n = v.getUint16(ifd, le);
+      let gps = false;
+      for (let i = 0; i < n; i++) {
+        const e = ifd + 2 + i * 12;
+        if (e + 2 > v.byteLength) break;
+        if (v.getUint16(e, le) === 0x8825) gps = true;
+      }
+      return { exif: true, gps };
+    }
+    if (marker === 0xffda) break;
+    off += 2 + len;
+  }
+  return { exif: false, gps: false };
+}
+function stripTool() {
+  const file = h("input", { type: "file", accept: "image/jpeg,image/png,image/webp", multiple: true });
+  const out = h("div", { class: "stack" });
+  let urls = [];
+  const go = h("button", { class: "btn" }, "حذف البيانات الوصفية");
+  go.addEventListener("click", async () => {
+    let files = [...file.files];
+    if (!files.length) return toast("اختر صورة أولاً.", "err");
+    const L = lim();
+    if (files.length > L.images) { toast(isVip() ? "الحد الأقصى " + L.images + " صورة." : `النسخة المجانية: ${L.images} صور بالمرة. VIP بيفتح المزيد.`, "err"); files = files.slice(0, L.images); }
+    urls.forEach(URL.revokeObjectURL); urls = []; out.replaceChildren(); go.disabled = true;
+    for (const f of files) {
+      if (f.size > L.imageBytes) { out.append(h("p", { class: "muted" }, f.name + ": الحجم أكبر من المسموح.")); continue; }
+      try {
+        let note = "تم تنظيف الملف";
+        if (f.type === "image/jpeg") {
+          const info = exifInfo(await f.slice(0, 131072).arrayBuffer());
+          note = info && info.gps ? "⚠ كانت تحتوي موقعك الجغرافي (GPS) وتم حذفه" : info && info.exif ? "كانت تحتوي بيانات الكاميرا (EXIF) وتم حذفها" : "ما لقينا بيانات EXIF، والملف نظيف";
+        }
+        const bmp = await createImageBitmap(f);
+        if (bmp.width * bmp.height > 60e6) throw new Error("too_large");
+        const cv = document.createElement("canvas"); cv.width = bmp.width; cv.height = bmp.height;
+        cv.getContext("2d").drawImage(bmp, 0, 0);
+        if (bmp.close) bmp.close();
+        const blob = await new Promise((res) => cv.toBlob(res, f.type, 0.95));
+        if (!blob) throw new Error("encode_failed");
+        const url = URL.createObjectURL(blob); urls.push(url);
+        const ext = { "image/jpeg": "jpg", "image/png": "png", "image/webp": "webp" }[f.type];
+        out.append(dlRow(url, f.name, `${fmtSize(f.size)} ← ${fmtSize(blob.size)} — ${note}`, url, f.name.replace(/\.[^.]+$/, "").slice(0, 60) + "-clean." + ext));
+      } catch (_) { out.append(h("p", { style: "color:var(--danger)" }, f.name + ": تعذّرت معالجة هالملف.")); }
+    }
+    go.disabled = false;
+  });
+  return h("div", { class: "stack" },
+    h("p", { class: "muted" }, "الصور بتحمل أحياناً موقعك الجغرافي ونوع جهازك ووقت التصوير. هالأداة بتحذفها كلها قبل ما تشارك الصورة."),
+    h("div", { class: "drop" }, h("div", {}, "اختر صور JPG أو PNG أو WebP"), file), go, out);
+}
+
+/* ===== استخراج الصوت من فيديو ===== */
+function videoAudioTool() {
+  let outUrl = null;
+  const file = h("input", { type: "file", accept: "video/*" });
+  const fmt = fmtSelect();
+  const out = h("div", { class: "stack" });
+  const go = h("button", { class: "btn" }, "استخراج الصوت");
+  go.addEventListener("click", async () => {
+    const f = file.files[0];
+    if (!f) return toast("اختر فيديو أولاً.", "err");
+    const L = lim();
+    if (f.size > L.videoBytes) return toast("الفيديو أكبر من المسموح (" + fmtSize(L.videoBytes) + "). VIP بيرفع الحد.", "err");
+    go.disabled = true; out.replaceChildren(h("p", { class: "muted" }, "جاري استخراج الصوت… قد ياخد وقت مع الملفات الكبيرة")); await tick();
+    try {
+      const ctx = audioCtx();
+      const buf = await ctx.decodeAudioData(await f.arrayBuffer());
+      if (ctx.close) ctx.close();
+      if (buf.duration > L.videoSeconds) { out.replaceChildren(); go.disabled = false; return toast("النسخة المجانية: حتى 10 دقائق. VIP بدون حد.", "err"); }
+      const chs = []; for (let c = 0; c < Math.min(buf.numberOfChannels, 2); c++) chs.push(buf.getChannelData(c));
+      const { blob, ext } = encodeAudio(chs, buf.sampleRate, fmt.value);
+      if (outUrl) URL.revokeObjectURL(outUrl);
+      outUrl = URL.createObjectURL(blob);
+      out.replaceChildren(h("audio", { controls: true, src: outUrl }), h("a", { class: "btn small", href: outUrl, download: f.name.replace(/\.[^.]+$/, "").slice(0, 60) + "." + ext }, "تنزيل (" + fmtSize(blob.size) + ")"));
+    } catch (_) { out.replaceChildren(h("p", { style: "color:var(--danger)" }, "ما قدرت أقرأ الصوت من هالفيديو. جرّب فيديو MP4 أو WebM، أو متصفح تاني.")); }
+    go.disabled = false;
+  });
+  return h("div", { class: "stack" },
+    h("div", { class: "drop" }, h("div", {}, "اختر فيديو (MP4, WebM, MOV…)"), file),
+    h("div", {}, h("label", {}, "صيغة الناتج"), fmt), go, out);
+}
+
+/* ===== مسجّل صوت ===== */
+function recorderTool() {
+  let rec = null, stream = null, chunks = [], timer = null, t0 = 0, buffer = null, rawUrl = null, outUrl = null;
+  const status = h("p", { class: "muted" }, "جاهز للتسجيل");
+  const btn = h("button", { class: "btn" }, "ابدأ التسجيل");
+  const editor = h("div", { class: "stack" });
+  const stop = () => { if (rec && rec.state !== "inactive") rec.stop(); };
+
+  function showEditor(blob) {
+    if (rawUrl) URL.revokeObjectURL(rawUrl);
+    rawUrl = URL.createObjectURL(blob);
+    const d = buffer.duration;
+    const start = h("input", { type: "number", min: "0", step: "0.1", value: "0", dir: "ltr" });
+    const end = h("input", { type: "number", min: "0", step: "0.1", value: d.toFixed(1), dir: "ltr" });
+    const fmt = fmtSelect();
+    const res = h("div", { class: "stack" });
+    const exp = h("button", { class: "btn" }, "قص وتنزيل");
+    exp.addEventListener("click", async () => {
+      const s = Math.max(0, Number(start.value)), e = Math.min(d, Number(end.value));
+      if (!(e > s)) return toast("نهاية المقطع لازم تكون بعد بدايته.", "err");
+      exp.disabled = true; res.replaceChildren(h("p", { class: "muted" }, "جاري المعالجة…")); await tick();
+      const sr = buffer.sampleRate, a = Math.floor(s * sr), n = Math.floor(e * sr) - a, chs = [];
+      for (let c = 0; c < Math.min(buffer.numberOfChannels, 2); c++) chs.push(buffer.getChannelData(c).subarray(a, a + n));
+      const { blob: b, ext } = encodeAudio(chs, sr, fmt.value);
+      if (outUrl) URL.revokeObjectURL(outUrl);
+      outUrl = URL.createObjectURL(b);
+      res.replaceChildren(h("audio", { controls: true, src: outUrl }), h("a", { class: "btn small", href: outUrl, download: "recording." + ext }, "تنزيل (" + fmtSize(b.size) + ")"));
+      exp.disabled = false;
+    });
+    editor.replaceChildren(h("audio", { controls: true, src: rawUrl }),
+      h("div", { class: "grid cols-2" }, h("div", {}, h("label", {}, "البداية (ثانية)"), start), h("div", {}, h("label", {}, "النهاية (ثانية)"), end), h("div", {}, h("label", {}, "صيغة الناتج"), fmt)),
+      exp, res);
+  }
+
+  btn.addEventListener("click", async () => {
+    if (rec && rec.state === "recording") { stop(); return; }
+    if (!navigator.mediaDevices || !window.MediaRecorder) return toast("متصفحك ما بيدعم التسجيل.", "err");
+    try { stream = await navigator.mediaDevices.getUserMedia({ audio: true }); }
+    catch (_) { return toast("ما قدرت أوصل للمايكروفون. اسمح بالإذن من إعدادات المتصفح.", "err"); }
+    chunks = []; buffer = null; editor.replaceChildren();
+    rec = new MediaRecorder(stream);
+    rec.ondataavailable = (e) => { if (e.data.size) chunks.push(e.data); };
+    rec.onstop = async () => {
+      clearInterval(timer); stream.getTracks().forEach((t) => t.stop());
+      btn.textContent = "تسجيل جديد"; btn.classList.remove("danger");
+      const blob = new Blob(chunks, { type: rec.mimeType || "audio/webm" });
+      status.textContent = "جاري تجهيز التسجيل…";
+      try {
+        const ctx = audioCtx();
+        buffer = await ctx.decodeAudioData(await blob.arrayBuffer());
+        if (ctx.close) ctx.close();
+        status.textContent = "تم التسجيل: " + buffer.duration.toFixed(1) + " ثانية";
+        showEditor(blob);
+      } catch (_) { status.textContent = ""; toast("تعذّرت قراءة التسجيل.", "err"); }
+    };
+    rec.start(); t0 = Date.now(); btn.textContent = "إيقاف التسجيل"; btn.classList.add("danger");
+    timer = setInterval(() => {
+      const s = (Date.now() - t0) / 1000;
+      status.textContent = "🔴 جاري التسجيل… " + Math.floor(s) + " ث";
+      if (s >= lim().recSeconds) { stop(); toast("وصلت للحد الأقصى للتسجيل.", "err"); }
+    }, 250);
+  });
+  return h("div", { class: "stack" },
+    h("p", { class: "muted" }, "سجّل من المايكروفون مباشرة، ثم قصّ المقطع ونزّله MP3 أو WAV. التسجيل ما بيطلع من جهازك."),
+    btn, status, editor);
+}
+
+const imageSuite = () => suite([["ضغط وتحويل", imageTool], ["تغيير الحجم والقص", resizeTool], ["صور إلى PDF", pdfTool], ["حذف البيانات الوصفية", stripTool]]);
+const audioSuite = () => suite([["قص", audioTool], ["دمج", mergeTool], ["صوت من فيديو", videoAudioTool], ["تسجيل", recorderTool]]);
 const textSuite = () => suite([["عدّاد الكلمات", wordTool], ["كلمات السر", passTool], ["منسّق JSON", jsonTool]]);
 
 function qrTool() {
@@ -772,6 +942,7 @@ async function accountView() {
         h("button", { class: "btn small ghost", onclick: async () => { const { error } = await sb.rpc("update_my_name", { p_name: name.value }); error ? toast(errMsg(error), "err") : (toast("تم الحفظ", "good"), loadProfile()); } }, "حفظ الاسم"),
         h("button", { class: "btn small ghost", onclick: () => openSetPassword(false) }, "تغيير كلمة السر")),
       h("div", { class: "glass" }, h("h2", {}, "محفظتي"), h("div", { class: "balance" }, money(p.balance) + "$"), h("p", { class: "muted small-text" }, "الرصيد بيتحدّث بعد ما المالك يؤكد استلام الدفع."))),
+    promoBox(),
     h("div", { class: "glass stack" }, h("h2", {}, "شحن الرصيد"), h("p", { class: "muted" }, "كل شحنة بتعطيك أيام VIP تلقائياً حسب الباقة."), pkgBox,
       payInfo(), h("div", {}, h("label", {}, "طريقة الدفع"), methodSel), orderBtn, orderOut),
     h("div", { class: "glass" }, h("h2", {}, "طلبات الشحن"), h("div", { class: "scroll-x" }, h("table", {},
@@ -814,8 +985,8 @@ let adminTab = "deposits";
 async function adminView() {
   if (!isStaff()) return h("div", { class: "glass" }, "غير مصرّح.");
   const body = h("div", { class: "stack" });
-  const sections = [["stats", "الإحصائيات", adminStats], ["deposits", "طلبات الشحن", adminDeposits], ["users", "المستخدمون", adminUsers], ["content", "المحتوى", adminContent], ["draw", "السحب", adminDraw], ["admins", "الأدمنية", adminAdmins], ["audit", "السجل", adminAudit]]
-    .filter(([k]) => (k === "admins" ? state.profile.role === "owner" : (k === "audit" || k === "stats") ? true : can(k === "draw" ? "draw" : k)));
+  const sections = [["stats", "الإحصائيات", adminStats], ["deposits", "طلبات الشحن", adminDeposits], ["users", "المستخدمون", adminUsers], ["content", "المحتوى", adminContent], ["posts", "المقالات", adminPosts], ["promos", "الأكواد", adminPromos], ["draw", "السحب", adminDraw], ["admins", "الأدمنية", adminAdmins], ["audit", "السجل", adminAudit]]
+    .filter(([k]) => (k === "admins" ? state.profile.role === "owner" : (k === "audit" || k === "stats") ? true : can(({ promos: "balance", posts: "content" })[k] || k)));
   if (!sections.find(([k]) => k === adminTab)) adminTab = sections[0] ? sections[0][0] : "";
   const tabs = h("div", { class: "tabs" });
   const load = async (k, fn) => { adminTab = k; [...tabs.children].forEach((b) => b.classList.toggle("on", b.dataset.k === k)); body.replaceChildren(h("p", { class: "muted" }, "جاري التحميل…")); try { body.replaceChildren(await fn()); } catch (e) { body.replaceChildren(h("p", { style: "color:var(--danger)" }, errMsg(e))); } };
@@ -1047,6 +1218,9 @@ const EN = {
   "نستخدم ملفات تعريف الارتباط لتشغيل الموقع وعرض الإعلانات. يمكنك قبولها أو رفض الإعلانية منها. ": "We use cookies to run the site and show ads. You can accept or decline advertising cookies. ",
   "موافق": "Accept", "رفض": "Decline", "جاري التحميل…": "Loading…", "جاري المعالجة…": "Processing…", "جاري الدمج…": "Merging…", "جاري إنشاء الملف…": "Creating file…", "جاري قراءة الملف…": "Reading file…",
   "ادعيلي اتزوجها": "Pray that I marry her",
+  "حذف البيانات الوصفية": "Remove metadata", "صوت من فيديو": "Audio from video", "تسجيل": "Record", "المدونة": "Blog", "استخراج الصوت": "Extract audio",
+  "ابدأ التسجيل": "Start recording", "إيقاف التسجيل": "Stop recording", "تسجيل جديد": "New recording", "قص وتنزيل": "Trim & download",
+  "عندك كود خصم أو هدية؟": "Have a promo or gift code?", "تفعيل الكود": "Redeem code",
   "اختر صورة أولاً.": "Choose an image first.", "أهلاً فيك!": "Welcome!", "تم الحفظ": "Saved", "تم النسخ": "Copied",
   "تم إنشاء حسابك وسجّلنا دخولك. أهلاً فيك!": "Your account is ready and you're logged in. Welcome!",
   "الإيميل أو كلمة السر غير صحيحة.": "Incorrect email or password.", "هالإيميل مسجّل من قبل.": "This email is already registered.",
@@ -1100,6 +1274,93 @@ let deferredInstall = null;
 window.addEventListener("beforeinstallprompt", (e) => { e.preventDefault(); deferredInstall = e; $("#installBtn").hidden = false; });
 $("#installBtn").addEventListener("click", async () => { if (!deferredInstall) return; deferredInstall.prompt(); deferredInstall = null; $("#installBtn").hidden = true; });
 if ("serviceWorker" in navigator) window.addEventListener("load", () => navigator.serviceWorker.register("sw.js").catch(() => { /* ignore */ }));
+
+
+/* ---------------- كود الخصم/الهدية (للمستخدم) ---------------- */
+function promoBox() {
+  const code = h("input", { placeholder: "CODE", dir: "ltr", maxlength: "32", autocapitalize: "characters", style: "flex:1;min-width:160px" });
+  const btn = h("button", { class: "btn small" }, "تفعيل الكود");
+  btn.addEventListener("click", async () => {
+    const c = code.value.trim();
+    if (!c) return;
+    btn.disabled = true;
+    const { data, error } = await sb.rpc("redeem_promo", { p_code: c });
+    btn.disabled = false;
+    if (error) return toast(errMsg(error), "err");
+    if (!data || !data.ok) return toast(errMsg({ message: (data && data.error) || "invalid_code" }), "err");
+    toast(data.kind === "vip_days" ? `تم! أضفنا ${data.value} يوم VIP لحسابك.` : `تم! أضفنا ${money(data.value)}$ لمحفظتك.`, "good");
+    await loadProfile(); route();
+  });
+  return h("div", { class: "glass stack" }, h("h2", {}, "عندك كود خصم أو هدية؟"), h("div", { class: "row" }, code, btn));
+}
+
+/* ---------------- إدارة الأكواد ---------------- */
+async function adminPromos() {
+  const { data, error } = await sb.from("promo_codes").select("*").order("created_at", { ascending: false });
+  if (error) throw error;
+  const code = h("input", { placeholder: "CODE (حروف كبيرة وأرقام)", dir: "ltr", maxlength: "32" });
+  const kind = h("select", {}, h("option", { value: "vip_days" }, "أيام VIP"), h("option", { value: "balance" }, "رصيد ($)"));
+  const val = h("input", { type: "number", min: "1", step: "1", placeholder: "القيمة (أيام أو $)", dir: "ltr" });
+  const max = h("input", { type: "number", min: "1", value: "1", dir: "ltr" });
+  const days = h("input", { type: "number", min: "0", value: "0", dir: "ltr" });
+  const gen = () => { const al = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789", a = new Uint32Array(10); crypto.getRandomValues(a); code.value = [...a].map((x) => al[x % al.length]).join(""); };
+  const create = h("button", { class: "btn small", onclick: async () => {
+    const { error: e } = await sb.rpc("admin_create_promo", { p_code: code.value.trim().toUpperCase(), p_kind: kind.value, p_value: Number(val.value), p_max_uses: Number(max.value), p_days_valid: Number(days.value) });
+    e ? toast(errMsg(e), "err") : (toast("تم إنشاء الكود", "good"), rerenderAdmin());
+  } }, "إنشاء الكود");
+  return h("div", { class: "stack" },
+    h("div", { class: "glass stack" }, h("h2", {}, "كود جديد"),
+      h("div", { class: "row" }, h("div", { style: "flex:1" }, h("label", {}, "الكود"), code), h("button", { class: "btn small ghost", onclick: gen }, "توليد")),
+      h("div", { class: "grid cols-2" }, h("div", {}, h("label", {}, "النوع"), kind), h("div", {}, h("label", {}, "القيمة"), val),
+        h("div", {}, h("label", {}, "عدد الاستخدامات المسموح"), max), h("div", {}, h("label", {}, "صالح لعدد أيام (0 = بدون انتهاء)"), days)),
+      create, h("p", { class: "muted small-text" }, "كل مستخدم يقدر يستخدم الكود مرة وحدة. استخدم أكواد طويلة وعشوائية، ومحاولات التخمين محدودة بالسيرفر.")),
+    h("div", { class: "glass scroll-x" }, h("table", {},
+      h("thead", {}, h("tr", {}, ...["الكود", "النوع", "الاستخدام", "ينتهي", "الحالة", ""].map((x) => h("th", {}, x)))),
+      h("tbody", {}, (data || []).map((c) => h("tr", {}, h("td", { dir: "ltr" }, c.code), h("td", {}, c.kind === "vip_days" ? c.value + " يوم VIP" : money(c.value) + "$"),
+        h("td", {}, c.uses + " / " + c.max_uses), h("td", {}, c.expires_at ? fmtDate(c.expires_at) : "—"),
+        h("td", {}, h("span", { class: "badge " + (c.active ? "ok" : "bad") }, c.active ? "فعّال" : "متوقف")),
+        h("td", {}, h("button", { class: "btn small ghost", onclick: async () => { const { error: e } = await sb.rpc("admin_toggle_promo", { p_code: c.code, p_active: !c.active }); e ? toast(errMsg(e), "err") : rerenderAdmin(); } }, c.active ? "إيقاف" : "تفعيل"))))))));
+}
+
+/* ---------------- إدارة المقالات ---------------- */
+dlg.addEventListener("close", () => { dlg.style.width = ""; });
+async function adminPosts() {
+  const { data, error } = await sb.from("posts").select("*").order("created_at", { ascending: false });
+  if (error) throw error;
+  return h("div", { class: "stack" },
+    h("div", { class: "row between" }, h("h2", { style: "margin:0" }, "المقالات"), h("button", { class: "btn small", onclick: () => openPostEditor(null) }, "+ مقال جديد")),
+    h("p", { class: "muted small-text" }, "المقالات المنشورة بتظهر بصفحة المدونة، وبتساعد الموقع يظهر بمحركات البحث. اكتب مقالات مفيدة وأصلية (400 كلمة فأكثر)."),
+    h("div", { class: "glass scroll-x" }, h("table", {}, h("tbody", {}, (data || []).length ? data.map((p) => h("tr", {},
+      h("td", {}, p.title), h("td", {}, h("span", { class: "badge " + (p.published ? "ok" : "warn") }, p.published ? "منشور" : "مسودة")),
+      h("td", { dir: "ltr" }, "?p=" + p.slug), h("td", {}, h("button", { class: "btn small ghost", onclick: () => openPostEditor(p) }, "تعديل")))) : h("tr", {}, h("td", {}, "لا توجد مقالات بعد."))))));
+}
+function openPostEditor(p) {
+  dlg.style.width = "min(94vw, 680px)";
+  const slug = h("input", { value: p ? p.slug : "", dir: "ltr", maxlength: "80", placeholder: "my-article-title" });
+  const title = h("input", { value: p ? p.title : "", maxlength: "140" });
+  const excerpt = h("textarea", { maxlength: "300", style: "min-height:70px" }); excerpt.value = p ? p.excerpt : "";
+  const body = h("textarea", { maxlength: "30000", style: "min-height:260px" }); body.value = p ? p.body : "";
+  const pub = h("input", { type: "checkbox", checked: p ? p.published : false });
+  const save = h("button", { class: "btn" }, "حفظ");
+  save.addEventListener("click", async () => {
+    save.disabled = true;
+    const { error } = await sb.rpc("admin_save_post", { p_id: p ? p.id : null, p_slug: slug.value.trim().toLowerCase(), p_title: title.value.trim(), p_excerpt: excerpt.value.trim(), p_body: body.value, p_published: pub.checked });
+    save.disabled = false;
+    if (error) return toast(/slug|check|unique|violates/i.test(error.message || "") ? "الرابط (slug) لازم يكون حروف إنجليزية صغيرة وأرقام وشرطات (3-80) وما يتكرر." : errMsg(error), "err");
+    toast("تم الحفظ", "good"); closeDlg(); rerenderAdmin();
+  });
+  openDlg(h("h2", {}, p ? "تعديل مقال" : "مقال جديد"),
+    h("div", { class: "stack" },
+      h("div", {}, h("label", {}, "الرابط (إنجليزي صغير وشرطات)"), slug),
+      h("div", {}, h("label", {}, "العنوان"), title),
+      h("div", {}, h("label", {}, "وصف قصير يظهر بنتائج البحث (حتى 300 حرف)"), excerpt),
+      h("div", {}, h("label", {}, "المحتوى"), body),
+      h("p", { class: "muted small-text" }, "التنسيق: سطر يبدأ بـ ## = عنوان فرعي. أسطر تبدأ بـ - = نقاط. سطر فارغ بين الفقرات."),
+      h("label", { class: "row" }, pub, " منشور (يظهر للزوار)"),
+      h("div", { class: "row" }, save,
+        p ? h("button", { class: "btn danger", onclick: async () => { if (!(await confirmDlg("حذف المقال", "ما في رجعة.", "احذف"))) return; const { error } = await sb.rpc("admin_delete_post", { p_id: p.id }); error ? toast(errMsg(error), "err") : (toast("تم الحذف", "good"), rerenderAdmin()); } }, "حذف") : null,
+        h("button", { class: "btn ghost", onclick: closeDlg }, "إغلاق"))));
+}
 
 /* ---------------- الموجّه ---------------- */
 const currentRoute = () => (location.hash.replace(/^#/, "") || "/").split("?")[0];
