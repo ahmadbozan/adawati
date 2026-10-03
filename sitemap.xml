@@ -1,9 +1,13 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
-  <url><loc>https://ahmadbozan.github.io/adawati/</loc></url>
-  <url><loc>https://ahmadbozan.github.io/adawati/about.html</loc></url>
-  <url><loc>https://ahmadbozan.github.io/adawati/guides.html</loc></url>
-  <url><loc>https://ahmadbozan.github.io/adawati/contact.html</loc></url>
-  <url><loc>https://ahmadbozan.github.io/adawati/privacy.html</loc></url>
-  <url><loc>https://ahmadbozan.github.io/adawati/terms.html</loc></url>
+  <url><loc>https://ahmadbozan.github.io/adawati/</loc><lastmod>2026-10-03</lastmod></url>
+  <url><loc>https://ahmadbozan.github.io/adawati/about.html</loc><lastmod>2026-10-03</lastmod></url>
+  <url><loc>https://ahmadbozan.github.io/adawati/guides.html</loc><lastmod>2026-10-03</lastmod></url>
+  <url><loc>https://ahmadbozan.github.io/adawati/blog.html</loc><lastmod>2026-10-03</lastmod></url>
+  <url><loc>https://ahmadbozan.github.io/adawati/contact.html</loc><lastmod>2026-10-03</lastmod></url>
+  <url><loc>https://ahmadbozan.github.io/adawati/privacy.html</loc><lastmod>2026-10-03</lastmod></url>
+  <url><loc>https://ahmadbozan.github.io/adawati/terms.html</loc><lastmod>2026-10-03</lastmod></url>
+  <url><loc>https://ahmadbozan.github.io/adawati/article-compress-images.html</loc><lastmod>2026-10-03</lastmod></url>
+  <url><loc>https://ahmadbozan.github.io/adawati/article-remove-photo-metadata.html</loc><lastmod>2026-10-03</lastmod></url>
+  <url><loc>https://ahmadbozan.github.io/adawati/article-strong-passwords.html</loc><lastmod>2026-10-03</lastmod></url>
 </urlset>

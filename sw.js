@@ -1,7 +1,7 @@
 // Service worker: يخلّي الموقع قابل للتثبيت ويشتغل بدون إنترنت (الأدوات تعمل محلياً).
 // استراتيجية: الشبكة أولاً (حتى تصلك التحديثات فوراً)، والكاش عند انقطاع الإنترنت.
 // طلبات Supabase والإعلانات لا تُخزَّن أبداً.
-const V = "adawati-v2";
+const V = "adawati-v3";
 const CORE = ["./", "index.html", "css/style.css", "js/app.js", "js/config.js", "manifest.json", "icon-192.png"];
 
 self.addEventListener("install", (e) => {
