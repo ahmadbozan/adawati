@@ -182,3 +182,10 @@ dialog::backdrop { background: rgba(0,0,0,.6); backdrop-filter: blur(4px); }
 .page ol, .page ul { padding-inline-start: 1.3rem; }
 .page li { margin-bottom: .35rem; }
 .page .nav-links { display: flex; gap: .9rem; flex-wrap: wrap; margin-bottom: .5rem; font-size: .95rem; }
+
+.seo-content { margin-top: 0; }
+.seo-content h3 { margin-top: 1rem; }
+html[lang="en"] .seo-content { display: none; }
+.article-body h2 { margin-top: 1.4rem; }
+.article-body p, .article-body li { font-size: 1.02rem; }
+.article-body ul { padding-inline-start: 1.3rem; }
