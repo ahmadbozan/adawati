@@ -1,0 +1,3 @@
+User-agent: *
+Allow: /
+Sitemap: https://ahmadbozan.github.io/adawati/sitemap.xml
